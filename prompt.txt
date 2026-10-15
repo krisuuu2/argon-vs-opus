@@ -1,0 +1,14 @@
+Turn this short business report into a 12-second animated explainer video for Instagram Reels.
+
+REPORT
+"Bloom Bakery, Q3 2026. Online orders grew from 120 a month in July to 410 in September (+242%). The biggest driver was the new pre-order page: 61% of September orders came through it. Average order value went up from $18 to $24. Next goal: 600 orders a month by December."
+
+REQUIREMENTS
+- Deliver ONE self-contained HTML file (inline CSS and JavaScript). No external libraries; Google Fonts are allowed.
+- The video is a 1080x1920 portrait canvas (or a 1080x1920 fixed-size page) that plays automatically from t = 0 to t = 12 s and then holds the last frame.
+- Drive every animation from time (requestAnimationFrame / performance.now), so the same time always shows the same frame.
+- Show the story in clear scenes: the growth from 120 to 410 (an animated number and a chart), the 61% pre-order share, the order value $18 -> $24, and the December goal.
+- It must look like a polished motion-design explainer: a strong visual style, smooth easing, readable text (nothing cut off or overlapping), and good pacing.
+- No video, audio, AI images or external image files.
+
+Reply with the complete HTML file only, in one ```html code block.

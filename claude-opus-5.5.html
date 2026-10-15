@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bloom Bakery — Q3 2026 Explainer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,800;9..144,900&family=Inter:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #141010; }
+  body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  canvas {
+    display: block;
+    width: min(100vw, calc(100vh * 9 / 16));
+    height: auto;
+    aspect-ratio: 9 / 16;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+(() => {
+  const W = 1080, H = 1920, DURATION = 12;
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+
+  const C = {
+    cream: '#FFF4E6', cocoa: '#2B1B17', pink: '#FF4F6D',
+    gold: '#FFC857', mint: '#3DD6AC', tan: '#EBD3B8'
+  };
+  const SERIF = "'Fraunces', Georgia, serif";
+  const SANS = "'Inter', system-ui, -apple-system, sans-serif";
+
+  // ---------- math & easing ----------
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const prog = (t, a, b) => clamp((t - a) / (b - a));
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const eOutCubic = p => 1 - Math.pow(1 - p, 3);
+  const eOutQuint = p => 1 - Math.pow(1 - p, 5);
+  const eInOutCubic = p => p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+  const eOutBack = p => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); };
+
+  // ---------- drawing helpers ----------
+  const font = (w, s, f) => `${w} ${s}px ${f}`;
+  const hasSpacing = 'letterSpacing' in ctx;
+  const setSpacing = px => { if (hasSpacing) ctx.letterSpacing = px + 'px'; };
+
+  function rr(x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function text(str, x, y, o = {}) {
+    const { size = 60, weight = 700, family = SANS, color = C.cocoa, align = 'center',
+            alpha = 1, spacing = 0, maxW = 940 } = o;
+    if (alpha <= 0) return;
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    let s = size, sp = spacing;
+    ctx.font = font(weight, s, family);
+    setSpacing(sp);
+    const w = ctx.measureText(str).width;
+    if (w > maxW) {
+      const k = maxW / w;
+      s *= k; sp *= k;
+      ctx.font = font(weight, s, family);
+      setSpacing(sp);
+    }
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(str, align === 'center' ? x + sp / 2 : x, y);
+    setSpacing(0);
+    ctx.restore();
+  }
+
+  // text that slides up out of a mask
+  function maskText(str, x, y, o, p) {
+    if (p <= 0) return;
+    const size = o.size || 60;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-50, y - size * 1.1, W + 100, size * 1.45);
+    ctx.clip();
+    text(str, x, y + (1 - p) * size * 1.2, { ...o, alpha: (o.alpha ?? 1) * Math.min(1, p * 1.6) });
+    ctx.restore();
+  }
+
+  function pill(str, cx, cy, o, sc) {
+    if (sc <= 0) return;
+    const { size = 48, weight = 800, family = SANS, bg, color } = o;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(sc, sc);
+    setSpacing(0);
+    ctx.font = font(weight, size, family);
+    const w = ctx.measureText(str).width + size * 1.4, h = size * 1.85;
+    ctx.fillStyle = bg;
+    rr(-w / 2, -h / 2, w, h, h / 2);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(str, 0, size * 0.05);
+    ctx.restore();
+  }
+
+  function background(color, blobColor, lt) {
+    ctx.fillStyle = color;
+    ctx.fillRect(-200, -200, W + 400, H + 400);
+    ctx.fillStyle = blobColor;
+    const B = [[160, 280, 280], [960, 820, 330], [220, 1620, 320]];
+    B.forEach((b, i) => {
+      const x = b[0] + Math.sin(lt * 0.6 + i * 2) * 40;
+      const y = b[1] + Math.cos(lt * 0.5 + i) * 50;
+      ctx.beginPath();
+      ctx.arc(x, y, b[2], 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // deterministic sprinkles, kept away from text areas
+  function rng(seed) {
+    return () => {
+      seed = (seed + 0x6D2B79F5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const SPRINKLES = (() => {
+    const r = rng(11), out = [];
+    let n = 0;
+    while (out.length < 30 && n < 5000) {
+      n++;
+      const x = 40 + r() * (W - 80), y = 40 + r() * (H - 80);
+      if (!(y < 220 || y > 1590)) continue;
+      out.push({ x, y, a: r() * Math.PI, len: 26 + r() * 22, c: Math.floor(r() * 3), d: r() * 0.5, s: (r() - 0.5) * 1.4 });
+    }
+    return out;
+  })();
+
+  function sprinkles(lt, cols) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 12;
+    SPRINKLES.forEach(s => {
+      const p = eOutBack(prog(lt, s.d, s.d + 0.5));
+      if (p <= 0) return;
+      ctx.save();
+      ctx.translate(s.x, s.y + Math.sin(lt * 1.5 + s.x) * 8);
+      ctx.rotate(s.a + lt * s.s);
+      ctx.scale(p, p);
+      ctx.strokeStyle = cols[s.c];
+      ctx.beginPath();
+      ctx.moveTo(-s.len / 2, 0);
+      ctx.lineTo(s.len / 2, 0);
+      ctx.stroke();
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  function flower(cx, cy, size, rot, petal, center, lt, delay) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rot);
+    ctx.fillStyle = petal;
+    for (let i = 0; i < 6; i++) {
+      const p = eOutBack(prog(lt, delay + i * 0.06, delay + 0.5 + i * 0.06));
+      if (p <= 0) continue;
+      const a = i * Math.PI / 3;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * size * 0.55, Math.sin(a) * size * 0.55, size * 0.45 * p, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const pc = eOutBack(prog(lt, delay + 0.3, delay + 0.8));
+    if (pc > 0) {
+      ctx.fillStyle = center;
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.4 * pc, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---------- scenes (lt = local time in seconds) ----------
+  function sIntro(lt) {
+    background(C.pink, '#FF6382', lt);
+    sprinkles(lt, [C.cream, C.gold, C.cocoa]);
+
+    const rot = -0.7 * (1 - eOutCubic(prog(lt, 0, 1.2))) + lt * 0.12;
+    flower(540, 660, 175, rot, C.cream, C.gold, lt, 0.05);
+
+    maskText('Bloom Bakery', 540, 1010,
+      { size: 140, weight: 900, family: SERIF, color: C.cream }, eOutQuint(prog(lt, 0.3, 1.0)));
+    pill('Q3 2026 · ONLINE ORDERS', 540, 1140,
+      { size: 40, weight: 800, bg: C.cocoa, color: C.cream }, eOutBack(prog(lt, 0.65, 1.1)));
+  }
+
+  function sGrowth(lt) {
+    background(C.cream, '#FBE7D2', lt);
+
+    maskText('ONLINE ORDERS PER MONTH', 540, 330,
+      { size: 38, weight: 800, color: C.pink, spacing: 6 }, eOutQuint(prog(lt, 0.3, 0.8)));
+
+    const cp = eInOutCubic(prog(lt, 0.7, 2.2));
+    const val = lerp(120, 410, cp);
+    maskText(String(Math.round(val)), 540, 620,
+      { size: 270, weight: 900, family: SERIF, color: C.cocoa }, eOutQuint(prog(lt, 0.4, 1.0)));
+
+    pill('+242%', 540, 720, { size: 52, weight: 800, bg: C.mint, color: C.cocoa },
+      eOutBack(prog(lt, 2.1, 2.55)));
+
+    // chart
+    const base = 1430, maxH = 520, bw = 280;
+    const hJFinal = maxH * 120 / 410;
+    const hJ = hJFinal * eOutCubic(prog(lt, 0.4, 1.0));
+    const hS = maxH * (val / 410) * eOutCubic(prog(lt, 0.5, 1.1));
+    const bars = [
+      { x: 320, h: hJ, col: C.tan },
+      { x: 760, h: hS, col: C.pink }
+    ];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, base);
+    ctx.clip();
+    bars.forEach(b => {
+      if (b.h <= 0) return;
+      ctx.fillStyle = b.col;
+      rr(b.x - bw / 2, base - b.h, bw, b.h + 40, 30);
+      ctx.fill();
+    });
+    ctx.restore();
+
+    // dashed July reference line across to September
+    const dp = eInOutCubic(prog(lt, 1.1, 1.6));
+    if (dp > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(43,27,23,0.4)';
+      ctx.lineWidth = 4;
+      ctx.setLineDash([14, 12]);
+      ctx.beginPath();
+      ctx.moveTo(180, base - hJFinal);
+      ctx.lineTo(180 + 720 * dp, base - hJFinal);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // axis
+    const ap = eInOutCubic(prog(lt, 0.3, 0.8));
+    if (ap > 0) {
+      ctx.save();
+      ctx.strokeStyle = C.cocoa;
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(540 - 420 * ap, base + 3);
+      ctx.lineTo(540 + 420 * ap, base + 3);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    text('120', 320, base - hJ - 28, { size: 52, weight: 800, color: C.cocoa, alpha: prog(lt, 0.8, 1.1) * 0.7 });
+    text(String(Math.round(val)), 760, base - hS - 28, { size: 52, weight: 800, color: C.pink, alpha: prog(lt, 0.9, 1.2) });
+
+    maskText('JULY', 320, 1505, { size: 36, weight: 800, color: C.cocoa, alpha: 0.7, spacing: 4 }, eOutQuint(prog(lt, 0.6, 1.0)));
+    maskText('SEPTEMBER', 760, 1505, { size: 36, weight: 800, color: C.cocoa, alpha: 0.7, spacing: 4, maxW: 280 }, eOutQuint(prog(lt, 0.7, 1.1)));
+  }
+
+  function sPreorder(lt) {
+    background(C.cocoa, '#3A2620', lt);
+
+    maskText('THE BIGGEST DRIVER', 540, 330,
+      { size: 38, weight: 800, color: C.gold, spacing: 6 }, eOutQuint(prog(lt, 0.25, 0.75)));
+    maskText('The new', 540, 450,
+      { size: 100, weight: 800, family: SERIF, color: C.cream }, eOutQuint(prog(lt, 0.3, 0.9)));
+    maskText('pre-order page', 540, 555,
+      { size: 100, weight: 800, family: SERIF, color: C.cream }, eOutQuint(prog(lt, 0.38, 0.98)));
+
+    const cx = 540, cy = 1000, r = 250, lw = 64;
+    const rp = eOutBack(prog(lt, 0.3, 0.8));
+    if (rp > 0) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(rp, rp);
+      ctx.lineWidth = lw;
+      ctx.strokeStyle = 'rgba(255,244,230,0.13)';
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.stroke();
+
+      const ap = eInOutCubic(prog(lt, 0.6, 1.8));
+      if (ap > 0.002) {
+        const a0 = -Math.PI / 2, a1 = a0 + Math.PI * 2 * 0.61 * ap;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = C.gold;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, a0, a1);
+        ctx.stroke();
+        ctx.fillStyle = C.cocoa;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a1) * r, Math.sin(a1) * r, 12, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      text(Math.round(61 * ap) + '%', 0, 58, { size: 160, weight: 900, family: SERIF, color: C.cream, maxW: 390 });
+      ctx.restore();
+    }
+
+    maskText('of September orders', 540, 1400,
+      { size: 56, weight: 700, color: C.cream }, eOutQuint(prog(lt, 1.2, 1.7)));
+    maskText('came through pre-orders', 540, 1475,
+      { size: 44, weight: 500, color: C.cream, alpha: 0.72 }, eOutQuint(prog(lt, 1.35, 1.85)));
+  }
+
+  function card(cx, cy, w, h, rot, bg, label, labelCol, val, valCol, valAlpha) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rot);
+    ctx.shadowColor = 'rgba(43,27,23,0.28)';
+    ctx.shadowBlur = 50;
+    ctx.shadowOffsetY = 24;
+    ctx.fillStyle = bg;
+    rr(-w / 2, -h / 2, w, h, 40);
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    text(label, 0, -h / 2 + 95, { size: 34, weight: 800, color: labelCol, spacing: 5, maxW: w - 60 });
+    text(val, 0, h / 2 - 110, { size: 170, weight: 900, family: SERIF, color: valCol, alpha: valAlpha, maxW: w - 60 });
+    ctx.restore();
+  }
+
+  function sAov(lt) {
+    background(C.gold, '#FFD27A', lt);
+
+    maskText('AVERAGE ORDER VALUE', 540, 330,
+      { size: 38, weight: 800, color: C.cocoa, alpha: 0.75, spacing: 6 }, eOutQuint(prog(lt, 0.25, 0.75)));
+    maskText('Bigger baskets', 540, 460,
+      { size: 104, weight: 800, family: SERIF, color: C.cocoa }, eOutQuint(prog(lt, 0.3, 0.9)));
+
+    const cy = 870, cw = 380, ch = 440;
+    const pl = eOutQuint(prog(lt, 0.3, 0.85));
+    const pr = eOutQuint(prog(lt, 0.45, 1.0));
+    const cp = eInOutCubic(prog(lt, 0.75, 1.4));
+    if (pl > 0) card(300 - (1 - pl) * 800, cy, cw, ch, -0.04, C.cream, 'BEFORE', 'rgba(43,27,23,0.55)', '$18', C.cocoa, 0.55);
+    if (pr > 0) card(780 + (1 - pr) * 800, cy, cw, ch, 0.04, C.cocoa, 'NOW', C.gold, '$' + Math.round(lerp(18, 24, cp)), C.cream, 1);
+
+    const ap = eOutBack(prog(lt, 0.7, 1.1));
+    if (ap > 0) {
+      ctx.save();
+      ctx.translate(540, cy);
+      ctx.scale(ap, ap);
+      ctx.fillStyle = C.pink;
+      ctx.beginPath();
+      ctx.arc(0, 0, 50, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = C.cream;
+      ctx.lineWidth = 9;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-18, 0); ctx.lineTo(18, 0);
+      ctx.moveTo(4, -15); ctx.lineTo(19, 0); ctx.lineTo(4, 15);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    pill('+33%', 540, 1230, { size: 54, weight: 800, bg: C.pink, color: C.cream }, eOutBack(prog(lt, 1.3, 1.7)));
+    maskText('$6 more per order, on average', 540, 1360,
+      { size: 46, weight: 600, color: C.cocoa, alpha: 0.85 }, eOutQuint(prog(lt, 1.4, 1.85)));
+  }
+
+  function sGoal(lt) {
+    background(C.pink, '#FF6382', lt);
+    sprinkles(lt - 0.4, [C.cream, C.gold, C.cocoa]);
+
+    maskText('NEXT GOAL', 540, 330,
+      { size: 40, weight: 800, color: C.cream, spacing: 8 }, eOutQuint(prog(lt, 0.25, 0.7)));
+
+    const sp = eOutBack(prog(lt, 0.3, 0.85));
+    if (sp > 0) {
+      ctx.save();
+      ctx.translate(540, 570);
+      ctx.scale(sp, sp);
+      text('600', 0, 110, { size: 320, weight: 900, family: SERIF, color: C.cream });
+      ctx.restore();
+    }
+    maskText('orders a month', 540, 790,
+      { size: 62, weight: 800, color: C.cream }, eOutQuint(prog(lt, 0.5, 1.0)));
+    pill('by December', 540, 890, { size: 50, weight: 800, bg: C.cocoa, color: C.cream }, eOutBack(prog(lt, 0.7, 1.1)));
+
+    // progress toward goal
+    const bx = 120, bw = 840, by = 1060, bh = 56;
+    const tp = prog(lt, 0.7, 1.0);
+    if (tp > 0) {
+      ctx.save();
+      ctx.globalAlpha = tp;
+      ctx.fillStyle = 'rgba(255,244,230,0.3)';
+      rr(bx, by, bw, bh, bh / 2);
+      ctx.fill();
+      const fw = bw * (410 / 600) * eInOutCubic(prog(lt, 0.85, 1.6));
+      if (fw > 0.5) {
+        ctx.fillStyle = C.cream;
+        rr(bx, by, fw, bh, bh / 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    const lp = prog(lt, 1.35, 1.7);
+    text('Now: 410', bx, by - 28, { size: 42, weight: 800, color: C.cream, align: 'left', alpha: lp });
+    text('Goal: 600', bx + bw, by - 28, { size: 42, weight: 800, color: C.cocoa, align: 'right', alpha: lp });
+
+    maskText('190 more orders to go', 540, 1210,
+      { size: 52, weight: 800, color: C.cocoa }, eOutQuint(prog(lt, 1.5, 1.9)));
+
+    flower(540, 1380, 100, lt * 0.25, C.cream, C.gold, lt, 1.6);
+    maskText('Bloom Bakery · Q3 2026', 540, 1500,
+      { size: 40, weight: 700, color: C.cream, alpha: 0.9, spacing: 2 }, eOutQuint(prog(lt, 1.8, 2.2)));
+  }
+
+  // ---------- timeline with circular wipes ----------
+  const SCENES = [
+    { s: 0.0, f: sIntro },
+    { s: 1.7, f: sGrowth,   o: [540, 1760], acc: C.gold },
+    { s: 4.9, f: sPreorder, o: [920, 340],  acc: C.pink },
+    { s: 7.3, f: sAov,      o: [160, 1500], acc: C.cream },
+    { s: 9.5, f: sGoal,     o: [540, 1000], acc: C.cocoa }
+  ];
+  const WIPE = 0.7;
+
+  function render(t) {
+    t = clamp(t, 0, DURATION);
+    let i = 0;
+    for (let k = 0; k < SCENES.length; k++) if (t >= SCENES[k].s) i = k;
+    const cur = SCENES[i];
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+
+    if (i > 0 && t < cur.s + WIPE) {
+      const prev = SCENES[i - 1];
+      const p1 = eInOutCubic(prog(t, cur.s, cur.s + WIPE - 0.12));
+      const p2 = eInOutCubic(prog(t, cur.s + 0.12, cur.s + WIPE));
+      const [ox, oy] = cur.o;
+      const R = Math.max(Math.hypot(ox, oy), Math.hypot(W - ox, oy),
+                         Math.hypot(ox, H - oy), Math.hypot(W - ox, H - oy)) + 10;
+
+      ctx.save();
+      const k = 1 - 0.06 * p1;
+      ctx.translate(W / 2, H / 2);
+      ctx.scale(k, k);
+      ctx.translate(-W / 2, -H / 2);
+      prev.f(t - prev.s);
+      ctx.restore();
+
+      if (p1 > 0) {
+        ctx.fillStyle = cur.acc;
+        ctx.beginPath();
+        ctx.arc(ox, oy, p1 * R, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (p2 > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(ox, oy, p2 * R, 0, Math.PI * 2);
+        ctx.clip();
+        cur.f(t - cur.s);
+        ctx.restore();
+      }
+    } else {
+      cur.f(t - cur.s);
+    }
+  }
+
+  // ---------- playback ----------
+  const params = new URLSearchParams(location.search);
+  const fixedT = params.has('t') ? parseFloat(params.get('t')) : null;
+  let t0 = 0, running = false;
+
+  function loop(now) {
+    const t = (now - t0) / 1000;
+    if (t >= DURATION) { render(DURATION); running = false; return; }
+    render(t);
+    requestAnimationFrame(loop);
+  }
+  function play() {
+    t0 = performance.now();
+    if (!running) { running = true; requestAnimationFrame(loop); }
+  }
+
+  render(fixedT ?? 0);
+
+  const fontsReady = Promise.all([
+    document.fonts.load(font(900, 100, SERIF)),
+    document.fonts.load(font(800, 100, SERIF)),
+    document.fonts.load(font(500, 40, SANS)),
+    document.fonts.load(font(600, 40, SANS)),
+    document.fonts.load(font(700, 40, SANS)),
+    document.fonts.load(font(800, 40, SANS))
+  ]).catch(() => {});
+  const timeout = new Promise(res => setTimeout(res, 3000));
+
+  Promise.race([fontsReady, timeout]).then(() => {
+    if (fixedT !== null) { render(fixedT); return; }
+    play();
+  });
+
+  // click to replay from t = 0
+  cv.addEventListener('click', () => { if (fixedT === null) play(); });
+})();
+</script>
+</body>
+</html>
